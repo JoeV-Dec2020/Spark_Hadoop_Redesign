@@ -1,140 +1,137 @@
 README.md
 
-## Airflow Mini-Project ##
-## DAG Scheduling ##
+## Spark Mini Project ##
+## Automobile post-sales report (Redesign) ##
 
 **Estimated Time: 3-5 hours**
 
-In this project, you’ll use Apache Airflow to create a data pipeline to extract online stock market
-data and deliver analytical results. You’ll use Yahoo Finance as the data source. Yahoo Finance
-provides intra-day market price details down a one-minute interval.
+**Note: For this project, we are leveraging Spark as the new engine to redesign the Hadoop
+auto post-sales report project that was previously done in MapReduce.**
 
-You’ll work with two stock symbols: AAPL and TSLA. The workflow should be scheduled to run
-at 6 PM on every weekday (Mon - Fri), which functions as below:
-- Download the daily price data with one minute interval for the two symbols. Each symbol
-will have a separate task, Task1 (t1) and Task2 (t2), which run independently and in
-parallel.
-- Save both datasets into CSV files and load them into HDFS. Each symbol will have a
-separate task, Task3 (t3) and Task4 (t4), which run independently and in parallel.
-- Run your custom query on the downloaded dataset for both symbols, Task5 (t5). Before
-this step executes, all previous tasks must complete.
-- Use Celery Executor in Airflow to run the job.
+Consider an automobile tracking platform that keeps track of history of incidents after a new
+vehicle is sold by the dealer. Such incidents include further private sales, repairs and accident
+reports. This provides a good reference for second hand buyers to understand the vehicles they
+are interested in.
 
-The source data has the following schema.
+The same dataset of a history report of various vehicles is provided. Your goal is to write a
+Spark job to produce a report of the total number of accidents per make and year of the car.
+
+The report is stored as CSV files in HDFS with the following schema.
+
 Column | Type
 -------|-----
-date time | STRING
-open | DECIMAL
-high | DECIMAL (highest price within the time interval)
-low | DECIMAL (lowest price within the time interval)
-close | DECIMAL (the last price of the time interval)
-adj close | DECIMAL
-volume | DECIMAL
+incident_id | INT
+incident_type | STRING (I: initial sale, A: accident, R: repair)
+vin_number | STRING
+make | STRING (The brand of the car, only populated with incident type “I”)
+model | STRING (The model of the car, only populated with incident type “I”)
+year | STRING (The year of the car, only populated with incident type “I”)
+Incident_date | DATE (Date of the incident occurrence)
+description | STRING
 
 **Learning Objectives**
 
-With this mini-project, you will utilize Apache Airflow to orchestrate your pipeline, exercise the
-DAG creation, uses of various operators (BashOperator, PythonOperator, etc), setting up order
-of operation of each task.
+With this mini project, you will exercise using Spark transformations to solve traditional
+MapReduce data problems. It demonstrates Spark having a significant advantage against
+Hadoop MapReduce framework, in both code simplicity and its in-memory processing
+performance, which best suit for the chain of MapReduce use cases.
 
-In this mini-project, you will gain familiarity with how to use Apache Airflow to automate data
-pipelining tasks. Along the way, you will learn how to:
-* Use Apache Airflow to orchestrate your pipeline
-* Exercise DAG creation
-* Use Various Airflow operators like BashOperator and PythonOperator
-* Set up the order operation of each task
-* Use Celery Executor to run your job
+**Hadoop Setup**
 
-**Prerequisites**
-- Install Airflow: http://airflow.apache.org/docs/stable/installation.html
-- For this project, you’ll need Yahoo Finance’s Python library. You can install it using the
-command: `pip install yfinance`
-- Install pandas using the command: `pip install pandas`
+Unless you have Hadoop setup elsewhere, we recommend using Hortonworks Hadoop
+Sandbox to run and test your code. This sandbox is a pre-configured virtual machine that has all
+necessary installation completed. You can follow the instructions from this video.
+
+Similar setup can be done in MacOs and Windows systems.
+
+As you setup Hadoop, add this data.csv into your file structure where you will be able to access
+it in the steps below.
 
 **Instructions**
 
-**1. Create the Airflow DAG**
+**Step 1. Filter out accident incidents with make and year**
 
-Create the DAG object with name “marketvol”. Set the default arguments. Your DAG run should
-follows:
-* Start time and date: 6 PM on the current date.
-* Job interval: runs once daily.
-* Only runs on weekdays (Mon-Fri).
-* If failed: retry twice with a 5-minute interval.
+Since we only care about accident records, we should filter out records having incident type
+other than “I”. However, accident records don't carry make and year fields due to the design to
+remove redundancy. So our first step is propagating make and year info from record type I into
+all other record types.
 
-```
-dag = DAG(
-    'marketvol',
-    default_args=default_args,
-    description='A simple DAG',
-    schedule_interval=timedelta(days=1),
-)
-```
+**1.1 Read the input data CSV file**
 
-**2. Create operators associated with the DAG**
-
-**2.1. Create a BashOperator to initialize a temporary directory for data download (t0)**
-
-This temporary directory should be named after the execution date (for example “2020-09-24”)
-so that the data for each date is placed accordingly. You can use the shell command to create
-the directory:
-
-`mkdir -p /tmp/data/2020-09-24`
-
-**2.2. Create a PythonOperator to download the market data (t1, t2)**
-
-This example downloads and saves the file. Make your own function the Airflow runs with the
-stock symbol type as a parameter.
+Use the Spark context object to read the input file to create the input RDD.
 
 ```
-import yfinance as yf  
-start_date = date.today()  
-end_date = start_date + timedelta(days=1)  
-tsla_df = yf.download('TSLA', start=start_date, end=end_date, interval='1m')  
-tsla_df.to_csv("data.csv" header=False)
+sc = SparkContext("local", "My Application")
+raw_rdd = sc.textFile("data.csv")
 ```
 
-The PythonOperator should call the above function. Name the operators t1 and t2 for the
-symbol AAPL and TSLA respectively.
+**1.2 Perform map operation**
 
-**2.3. Create BashOperator to move the downloaded file to a data location (t3, t4)**
-
-Once the file is downloaded for each stock symbol type, the next step is to move that file into
-the designated location where your query will target when it runs. This is easy to do with a
-BashOperator. You should create one task per symbol (t3, t4), for a total of two tasks. The query
-will operate on both symbols together, so both files should be moved to the same directory.
+We need to propagate make and year to the accident records (incident type A), using
+vin_number as the aggregate key. Therefore the map output key should be vin_number, value
+should be the make and year, along with the incident type. In Spark, in order to proceed with the
+“groupByKey” function, we need the map operation to produce PairRDD, with tuple type as each
+record.
 
 ```
-t3 = BashOperator(  
-# [fill in options]  
-dag=dag)
+vin_kv = raw_rdd.map(lambda x: extract_vin_key_value(x))
+# Please implement method extract_vin_key_value()
 ```
 
-**2.4. Create a PythonOperator to run a query on both data files in the specified location (t5)**
+**1.3 Perform group aggregation to populate make and year to all the records**
 
-For this step, run your query on the data you downloaded for both symbols. This step should run
-only when t3 and t4 are completed.
+Like the reducer in MapReduce framework, Spark provides a “groupByKey” function to achieve
+shuffle and sort in order to aggregate all records sharing the same key to the same groups.
+Within a group of vin_number, we need to iterate through all the records and find the one that
+has the make and year available and capture it in group level master info. As we filter and
+output accident records, those records need to be modified adding the master info that we
+captured in the first iteration.
 
-**Step 3. Set job dependencies**
+```
+enhance_make = vin_kv.groupByKey().flatMap(lambda kv: populate_make(kv[1]))
+# Please implement method populate_make()
+```
 
-After defining all the tasks, you need to set their job dependencies so:
-* t1 and t2 must run only after t0
-* t3 must run after t1
-* t4 must run after t2
-* t5 must run after both t3 and t4 are complete
+**Step 2. Count number of occurrence for accidents for the vehicle make and year**
 
-**Step 4. Schedule the job in Airflow**
+**2.1 Perform map operation**
 
-Now that you have prepared the job configuration, you can schedule the DAG in Airflow and let
-it run automatically as scheduled. The command is below:
+The goal of this step is to count the number of records for each make and year combination,
+given the result we derived previously. The output key should be the combination of vehicle
+make and year. The value should be the count of 1.
 
-`airflow scheduler`
+```
+make_kv = enhance_make.map(lambda x: extract_make_key_value(x))
+# Please implement method extract_make_key_value()
+```
 
-Please run this Airflow for at least two days. In the next project, we will be using the scheduler
-log produced during this run.
+**2.2 Aggregate the key and count the number of records in total per key**
+
+Use Spark provided “reduceByKey” function to perform the sum of all the values (1) from each
+record. As a result, we get the make and year combination key along with its total record count.
+
+**Step 3. Save the result to HDFS as text**
+
+The output file should look similar to this.
+
+```
+Nissan-2003,1
+BMW-2008,10
+MERCEDES-2013,2
+```
+
+**Step 4. Shell script to run the Spark jobs**
+
+To run your Spark code, we need to use command “spark-submit” to start a Spark application
+and specify your Python script. Suppose your script is named autoinc_spark.py, your shell script
+should look like this.
+
+```
+spark-submit autoinc_spark.py
+```
 
 **Instruction for Submission:**
-* Push the Python code and shell script to GitHub.
-* Add a readme file to include steps to run your code and verify the result. Your mentor should be able to run it by following your instructions.
-* Readings about readme file: Example 1, Example 2
-* Attach the command line execution log for the successful job run. You can capture it in a text file.
+- Push the Python code and shell script to github.
+- Add a readme file to include steps to run your code and verify the result. Your mentor should be able to run it by following your instructions.
+- Readings about readme file: Example 1, Example 2
+- Attach the command line execution log for the successful job run. You can capture it in a text file.
