@@ -17,8 +17,8 @@ df=spark.read.csv('/user/jpvir/data/data.csv',
                             description STRING
                          ''')
 
-initDF = df.filter('incident_type == "I"').select('incident_type','vin_number','make','year')
-acctDF = df.filter('incident_type == "A"').select('incident_type','vin_number','make','year')
+initDF = df.sort('vin_number').filter('incident_type == "I"').select('incident_type','vin_number','make','year')
+acctDF = df.sort('vin_number').filter('incident_type == "A"').select('incident_type','vin_number','make','year')
 joinDF=initDF.join(acctDF, 'vin_number').select(initDF.make, initDF.year)
-rptDF=joinDF.groupBy("make","year").count()
+rptDF=joinDF.sort('make','year').groupBy("make","year").count()
 rptDF.write.format("com.databricks.spark.csv").save("/user/jpvir/data/output.csv")
